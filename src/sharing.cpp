@@ -6,6 +6,8 @@
 #include <Preferences.h>
 #include <time.h>
 #include "sharing.h"
+#include "dashboard.h"
+#include "history.h"
 
 
 namespace {
@@ -17,16 +19,46 @@ String ssid, pass, setupName, setupPassword, hostName;
 bool setupActive=false, trying=false;
 uint32_t lastAttempt=0;
 const char* page=R"HTML(<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>温湿度计配网</title><style>body{max-width:480px;margin:12vh auto;padding:24px;font:18px system-ui;color:#163d44}input,button{font:inherit;padding:12px;width:100%;box-sizing:border-box;margin:8px 0 18px}button{background:#14585b;color:white;border:0;border-radius:8px}</style><h1>温湿度计配网</h1><form method="post" action="/connect"><label>家里 2.4 GHz Wi-Fi 名称<input required name="ssid" maxlength="32"></label><label>Wi-Fi 密码<input type="password" name="pass" maxlength="64"></label><button>连接家里的 Wi-Fi</button></form></html>)HTML";
-const char* dashboard=R"HTML(<!doctype html><html lang="zh-CN"><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>家里的温湿度</title><style>body{max-width:30rem;margin:10vh auto;padding:20px;background:#12343a;color:#eef9f6;font:18px system-ui}section{padding:20px;margin:14px 0;background:#205056;border-radius:14px}b{font-size:3rem}p{color:#bce4de}</style><h1>家里的温湿度</h1><section>温度<br><b id="t">—</b> °C</section><section>相对湿度<br><b id="h">—</b> %</section><p id="status" role="status">正在读取…</p><script>
-const el=id=>document.getElementById(id);
-async function update(){
- const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),4000);
- try{const r=await fetch('/api/latest',{signal:ctrl.signal,cache:'no-store'}),d=await r.json();
- el('t').textContent=d.temperature_c?.toFixed(1)??'—';el('h').textContent=d.humidity_pct?.toFixed(1)??'—';
- el('status').textContent=d.online?'刚刚更新':d.status==='waiting'?'等待首次采样':'传感器暂无有效读数';
- }catch{el('t').textContent=el('h').textContent='—';el('status').textContent='与温湿度计的连接中断';}
- finally{clearTimeout(timer);setTimeout(update,2500);}
-}update();</script></html>)HTML";
+History history;
+portMUX_TYPE historyLock = portMUX_INITIALIZER_UNLOCKED;
+
+void recordHistory(const Sample& sample) {
+  portENTER_CRITICAL(&historyLock);
+  history.record(sample.acquired / 1000000, sample.temperature, sample.humidity);
+  portEXIT_CRITICAL(&historyLock);
+}
+
+void sendHistory() {
+  // Only the HTTP task writes this snapshot. Release the sampling lock before I/O.
+  static HistoryPoint snapshot[History::capacity];
+  portENTER_CRITICAL(&historyLock);
+  const int64_t now = esp_timer_get_time() / 1000000;
+  const size_t count = history.snapshot(now, snapshot);
+  portEXIT_CRITICAL(&historyLock);
+
+  portal.sendHeader("Cache-Control", "no-store");
+  portal.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  portal.send(200, "application/json", "");
+  portal.sendContent("{\"points\":[");
+  String chunk;
+  chunk.reserve(1152);
+  for (size_t i = 0; i < count; ++i) {
+    const auto& p = snapshot[i];
+    char row[96];
+    snprintf(row, sizeof(row), "%s[%lld,%lld,%.1f,%.1f]", i ? "," : "",
+             (long long)(now - p.seconds), (long long)(p.seconds / History::interval),
+             p.temperature, p.humidity);
+    chunk += row;
+    if (chunk.length() >= 1024) {
+      portal.sendContent(chunk);
+      chunk = "";
+    }
+  }
+  chunk += "]}";
+  portal.sendContent(chunk);
+  portal.sendContent("");
+}
+
 void sendLatest(){
   Sample s{};
   const bool sampled=xQueuePeek(samples,&s,0)==pdTRUE;
@@ -62,6 +94,7 @@ void configureRoutes(){
     portal.sendHeader("Cache-Control","no-store");
     portal.send(200,"text/html;charset=utf-8",setupActive && portal.client().localIP()==WiFi.softAPIP() ? page : dashboard);
   });
+  portal.on("/api/history", HTTP_GET, sendHistory);
   portal.on("/api/latest", HTTP_GET, sendLatest);
   portal.on("/connect",HTTP_POST,[]{
     // Only the setup hotspot accepts network credentials.
@@ -134,6 +167,7 @@ void startSharing(){
 }
 void queueSample(float temperature,float humidity){
   Sample s{temperature,humidity,esp_timer_get_time(),true};
+  recordHistory(s);
   if(samples)xQueueOverwrite(samples,&s);
 }
 

@@ -23,6 +23,14 @@ A USB-powered DHT11 thermometer with a portrait OLED, a local web dashboard and 
 
 Build and upload with the PlatformIO commands above. Open the serial monitor at 115200 baud for the device-specific setup SSID and password. Join the hotspot, visit `http://192.168.4.1/` and enter the credentials of a 2.4 GHz network. Join that network to open the device at its printed IP address or mDNS name.
 
+## 手机查看 24 小时曲线 / View the 24-hour charts on your phone
+
+1. 手机连到温湿度计所在的家庭 Wi-Fi。在浏览器打开串口显示的设备主页 `http://thermo-xxxx.local/`（将 `xxxx` 换成实际后缀）。如果手机无法解析这个名称，直接打开串口显示的 IP 地址。
+2. 页面顶部显示实时温度和相对湿度。向下滑到「最近 24 小时」，分别查看「温度趋势 · °C」和「湿度趋势 · %」。每张图上方的「最低」「最高」取自该图时间范围内已记录的有效采样点。
+3. 上电后，第一笔有效数据会显示为一个点，此时最高和最低相同。约 5 分钟后，第二个有效点就会连成线。缺测时曲线留空。关掉手机页面后设备仍会记录；断电或重启会清空历史。
+
+Connect your phone to the thermometer’s home Wi-Fi and open the device hostname or IP address printed in the serial monitor. Scroll below the live readings to the 24-hour section. The temperature and relative humidity charts each show the lowest and highest recorded values above the plot. The board records one valid sample per five-minute interval and keeps a rolling 24 hours in RAM. A single point has the same minimum and maximum. Missing intervals appear as gaps. Recording continues with the browser closed and starts over after a restart.
+
 ## 局域网读取 / Local API
 
 Browse to `http://<device-ip>/` for the dashboard. Other devices can request `GET /api/latest` over HTTP. Any client on the same reachable LAN can read the measurements.
